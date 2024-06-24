@@ -11,4 +11,4 @@ Set-ExecutionPolicy Unrestricted
 Connect-MsolService -Credential $O365Cred
 #Import-Module LyncOnlineConnector
 cls
-Write-Host THIS IS FOR GANNETT!!!!!! -ForegroundColor Cyan
+Write-Host THIS IS FOR TEST!!! -ForegroundColor Cyan
