@@ -1,0 +1,282 @@
+Function DownloadFiles(){
+    #check if already ran
+    if(Test-Path C:\users\Default\Transcripts\TokenInstallDone.txt){
+        Write-Host "Repeat protection engaged, we are exiting" -ForegroundColor Red
+        exit
+    }
+
+    $version = [int](Get-Host).Version.Major
+    $ErrorActionPreference = "Stop"
+    #Old Way
+    #Start-Transcript c:\users\default\SCCMInstallTrans.txt
+    try{
+        Write-Host "Using New PS Logic"
+        #[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        #Grab Token
+        Write-Host "Grabbing token" -ForegroundColor Yellow
+        $data = Invoke-WebRequest -Uri 'https://autopilotfilestorage.blob.core.windows.net/publicapblob/BulkToken.txt?sp=r&st=2020-06-16T18:35:56Z&se=2099-06-17T02:35:56Z&spr=https&sv=2019-10-10&sr=b&sig=q7klkQJu5R1WT5WkZcykuYbJerUXV%2FBuV5%2FYOF2V6E0%3D' -Method Get -UseBasicParsing
+        $global:dltoken = [string]$data.Content.Trim()
+        if($global:dltoken.Length -le 0 -or $global:dltoken -eq $null){
+            #did not get good token exit
+            Write-Host "Error encountered: Did not get proper token string." -ForegroundColor Red
+            exit 1
+        }else{
+            Write-Host "Token grab was a success: $global:dltoken" -ForegroundColor Green
+        }
+        #Grab Installer
+        Write-Host "Grabbing installer" -ForegroundColor Yellow
+        Invoke-WebRequest -Uri "https://autopilotfilestorage.blob.core.windows.net/publicapblob/ccmsetup.exe?sp=r&st=2020-06-16T18:58:36Z&se=2099-06-17T02:58:36Z&spr=https&sv=2019-10-10&sr=b&sig=9ypmoG61rti6OmU7KEONdhKB40cEqf8SJqLl2i8N5oc%3D" -OutFile "C:\Users\default\ccmsetup.exe" -UseBasicParsing
+        #Grab Cleaner
+        Write-Host "Grabbing cleaner" -ForegroundColor Yellow
+        Invoke-WebRequest -Uri "https://autopilotfilestorage.blob.core.windows.net/publicapblob/ccmclean.exe?sp=r&st=2020-08-27T14:28:09Z&se=2099-08-27T22:28:09Z&spr=https&sv=2019-12-12&sr=b&sig=vRe%2Fpey6evekdvGI9EHnAt%2BX8KNp3pHLE0Cx1%2FQkYxc%3D" -OutFile "C:\Users\default\ccmclean.exe" -UseBasicParsing 
+    }catch{
+        $downloadError = $_.Exception.Message
+        Write-Host "Download error: $downloadError"
+        "Error On Download: $downloadError" | Out-File C:\users\Default\Transcripts\TokenInstallError.txt -Confirm:$false -Force
+    }
+}
+
+function PerformInstall(){
+    try{
+        #Perform Install
+		Start-Sleep -Seconds 20
+        $strCommand = "C:\Users\default\ccmsetup.exe"
+        $strArgs = "/mp:https://GANNETTCMG.gannett.com/CCM_Proxy_MutualAuth/72057594037928854 CCMHOSTNAME=GANNETTCMG.gannett.com/CCM_Proxy_MutualAuth/72057594037928854 SMSSiteCode=GAN CCMALWAYSINF=1 /NoCRLCheck /regtoken:$($global:dltoken)"
+		Write-Host "Sending install command: $strArgs" -ForegroundColor Green
+        Start-Process -FilePath C:\users\default\ccmsetup.exe -ArgumentList $strArgs -Wait
+        Out-File C:\users\Default\Transcripts\TokenInstallDone.txt -Confirm:$false -Force
+        
+        <# Sleep can cause script to fail, and thus intune would re-run which is bad.
+        Start-Sleep -Seconds 600
+    
+        if(Test-Path C:\windows\ccm){
+            exit 0
+        }else{
+            exit 1
+        }
+        #>
+
+        #Old Way
+        #&C:\Users\default\ccmsetup.exe /mp:https://GANNETTCMG.gannett.com/CCM_Proxy_MutualAuth/72057594037928854 CCMHOSTNAME=GANNETTCMG.gannett.com/CCM_Proxy_MutualAuth/72057594037928854 SMSSiteCode=GAN CCMALWAYSINF=1 /NoCRLCheck /regtoken:$($global:dltoken)
+        #&$strCommand $strArgs
+        #Stop-Transcript
+    }catch{
+        $errorm = $_.Exception.Message
+        Write-Host "Error encountered: $errorm" -ForegroundColor Red
+        "Error On Install: $errorm" | Out-File C:\users\Default\Transcripts\TokenInstallError.txt -Confirm:$false -Force
+        exit 1
+        #Stop-Transcript
+    }
+
+}
+
+Function CleanUpSCCM($pass){
+    Write-Host "Inside Clean Up Function: $pass"
+
+    try{
+        Start-Process -FilePath C:\users\Default\ccmsetup.exe -ArgumentList '/uninstall' -Wait -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 1 Fail: $errorIs"
+    }
+    try{
+        Start-Process -FilePath C:\users\Default\ccmclean.exe -ArgumentList '/q' -Wait -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 2 Fail: $errorIs"
+    }
+
+    try{
+        Get-Service -Name CcmExec -ErrorAction Stop | Stop-Service -Force -Verbose -ErrorAction Stop
+        Stop-Service -Name "SMS Agent Host" -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 3 Fail: $errorIs"
+    }
+
+
+    # Kill lingering services
+    try{
+        (Get-WmiObject Win32_Service -ComputerName $env:COMPUTERNAME -filter "name='ccmexec'").Delete()
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 4 Fail: $errorIs"
+    }
+    try{
+        (Get-WmiObject Win32_Service -ComputerName $env:COMPUTERNAME -filter "name='ccmsetup'").Delete()
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 4 Fail: $errorIs"
+    }
+    try{
+        (Get-WmiObject Win32_Service -ComputerName $env:COMPUTERNAME -filter "name='smstsmgr'").Delete()
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 4 Fail: $errorIs"
+    }
+
+
+    # Stop the Service "ccmsetup" which is also a Process "ccmsetup.exe" if it wasn't stopped in the services after uninstall
+    try{
+        Get-Process -Name ccmsetup -ErrorAction Stop | Stop-Process -Force -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 4 Fail: $errorIs"
+    }
+
+    # Delete the folder of the SCCM Client installation: "C:\Windows\CCM"
+    try{
+        Remove-Item -Path "$($Env:WinDir)\CCM" -Force -Recurse -Confirm:$false -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 5 Fail: $errorIs"
+    }
+
+    # Delete the folder of the SCCM Client Cache of all the packages and Applications that were downloaded and installed on the Computer: "C:\Windows\ccmcache"
+    try{
+        Remove-Item -Path "$($Env:WinDir)\CCMSetup" -Force -Recurse -Confirm:$false -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 6 Fail: $errorIs"
+    }
+
+    # Delete the folder of the SCCM Client Setup files that were used to install the client: "C:\Windows\ccmsetup"
+    try{
+        Remove-Item -Path "$($Env:WinDir)\CCMCache" -Force -Recurse -Confirm:$false -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 7 Fail: $errorIs"
+    }
+
+    # Delete the file with the certificate GUID and SMS GUID that current Client was registered with
+    try{
+        Remove-Item -Path "$($Env:WinDir)\smscfg.ini" -Force -Confirm:$false -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 8 Fail: $errorIs"
+    }
+
+    # Delete the certificate itself
+    try{
+        Remove-Item -Path 'HKLM:\Software\Microsoft\SystemCertificates\SMS\Certificates\*' -Force -Confirm:$false -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 9 Fail: $errorIs"
+    }
+
+    # Remove all the registry keys associated with the SCCM Client that might not be removed by ccmsetup.exe
+    try{
+        Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\CCM' -Force -Recurse -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 10 Fail: $errorIs"   
+    }
+    try{
+        Remove-Item -Path 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\CCM' -Force -Recurse -Confirm:$false -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 10 Fail: $errorIs"   
+    }
+    try{
+        Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\SMS' -Force -Recurse -Confirm:$false -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 10 Fail: $errorIs"   
+    }
+    try{
+        Remove-Item -Path 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\SMS' -Force -Recurse -Confirm:$false -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 10 Fail: $errorIs"   
+    }
+    try{
+        Remove-Item -Path 'HKLM:\Software\Microsoft\CCMSetup' -Force -Recurse -Confirm:$false -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 10 Fail: $errorIs"   
+    }
+    try{
+        Remove-Item -Path 'HKLM:\Software\Wow6432Node\Microsoft\CCMSetup' -Force -Confirm:$false -Recurse -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 10 Fail: $errorIs"   
+    }
+
+    # Remove the service from "Services"
+    try{
+        Remove-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\CcmExec' -Force -Recurse -Confirm:$false -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 11 Fail: $errorIs"
+    }
+    try{    
+        Remove-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\ccmsetup' -Force -Recurse -Confirm:$false -Verbose -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 12 Fail: $errorIs"
+    }
+
+    # Remove the Namespaces from the WMI repository
+    try{
+        Get-CimInstance -query "Select * From __Namespace Where Name='CCM'" -Namespace "root" -ErrorAction Stop | Remove-CimInstance -Verbose -Confirm:$false -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 13 Fail: $errorIs"   
+    }
+    try{
+        Get-CimInstance -query "Select * From __Namespace Where Name='CCMVDI'" -Namespace "root" -ErrorAction Stop | Remove-CimInstance -Verbose -Confirm:$false -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 13 Fail: $errorIs"   
+    }
+    try{
+        Get-CimInstance -query "Select * From __Namespace Where Name='SmsDm'" -Namespace "root" -ErrorAction Stop | Remove-CimInstance -Verbose -Confirm:$false -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 13 Fail: $errorIs"   
+    }
+    try{
+        CimInstance -query "Select * From __Namespace Where Name='sms'" -Namespace "root\cimv2" -ErrorAction Stop | Remove-CimInstance -Verbose -Confirm:$false -ErrorAction Stop
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 13 Fail: $errorIs"   
+    }
+
+    # Alternative command for WMI Removal in case of something goes wrong with the above.
+    try{
+        Get-WmiObject -query "Select * From __Namespace Where Name='CCM'" -Namespace "root" -ErrorAction Stop | Remove-WmiObject -Verbose -ErrorAction Stop | Out-Host
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 14 Fail: $errorIs"   
+    }
+    try{
+        Get-WmiObject -query "Select * From __Namespace Where Name='CCMVDI'" -Namespace "root" -ErrorAction Stop | Remove-WmiObject -Verbose -ErrorAction Stop | Out-Host
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 14 Fail: $errorIs"   
+    }
+    try{
+        Get-WmiObject -query "Select * From __Namespace Where Name='SmsDm'" -Namespace "root" -ErrorAction Stop | Remove-WmiObject -Verbose -ErrorAction Stop | Out-Host
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 14 Fail: $errorIs"   
+    }
+    try{
+        Get-WmiObject -query "Select * From __Namespace Where Name='sms'" -Namespace "root\cimv2" -ErrorAction Stop | Remove-WmiObject -Verbose -ErrorAction Stop | Out-Host
+    }catch{
+        $errorIs = $_.Exception.Message
+        Write-Host "Step 14 Fail: $errorIs"   
+    }
+}
+
+#Download
+DownloadFiles
+#First
+CleanUpSCCM "Pass 1"
+#Second
+CleanUpSCCM "Pass 2"
+#Third
+CleanUpSCCM "Pass 3"
+#Install sccm
+PerformInstall
+
