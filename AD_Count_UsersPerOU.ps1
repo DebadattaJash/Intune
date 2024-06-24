@@ -1,11 +1,6 @@
-﻿# US DOMAIN CONTROLLER ent-mocadbh01.us.ad.gannett.com
-# PNI DOMAIN CONTROLLER pni-pocaddc02.pni.us.ad.gannett.com
-# INI DOMAIN CONTROLLER ini-mocaddc01.ini.us.ad.gannett.com
-# USAT DOMAIN CONTROLLER usat-mocadbh01.usatoday.us.ad.gannett.com
+﻿Import-Module activeDirectory
 
-Import-Module activeDirectory
-
-$fqdn = Read-Host "ini.us.ad.gannett.com"
+$fqdn = Read-Host "_____"
 $cred = Get-Credential
 
 Write-Host "Contacting $fqdn domain..." -ForegroundColor Yellow
